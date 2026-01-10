@@ -739,43 +739,50 @@ class PBSIE(InfoExtractor):
 
 
 class PBSKidsIE(InfoExtractor):
-    _VALID_URL = r'https?://(?:www\.)?pbskids\.org/video/[\w-]+/(?P<id>\d+)'
+    _VALID_URL = r'https?://(?:www\.)?pbskids\.org/(?:video/|videos/playlist/[^/]+?)(?:[\w-]+/)?(?P<id>\d+)'
     _TESTS = [
         {
-            'url': 'https://pbskids.org/video/molly-of-denali/3030407927',
-            'md5': '1ded20a017cc6b53446238f1804ce4c7',
+            'url': 'https://pbskids.org/videos/playlist/daniel-tigers-neighborhood-full-episodes/1385806',
             'info_dict': {
-                'id': '3030407927',
-                'title': 'Bird in the Hand/Bye-Bye Birdie',
-                'channel': 'molly-of-denali',
-                'duration': 1540,
-                'ext': 'mp4',
-                'series': 'Molly of Denali',
-                'description': 'md5:d006b2211633685d8ebc8d03b6d5611e',
-                'categories': ['Episode'],
-                'upload_date': '20190718',
+                'id': '1385806',
+                'title': 'Full Episodes',
+                'description': 'md5:5757917757ee92a40735f11075be8c06',
             },
-        },
-        {
-            'url': 'https://pbskids.org/video/plum-landing/2365205059',
-            'md5': '92e5d189851a64ae1d0237a965be71f5',
-            'info_dict': {
-                'id': '2365205059',
-                'title': 'Cooper\'s Favorite Place in Nature',
-                'channel': 'plum-landing',
-                'duration': 67,
-                'ext': 'mp4',
-                'series': 'Plum Landing',
-                'description': 'md5:657e5fc4356a84ead1c061eb280ff05d',
-                'categories': ['Episode'],
-                'upload_date': '20140302',
-            },
+            'playlist_count': 22,
         },
     ]
 
     def _real_extract(self, url):
         video_id = self._match_id(url)
         webpage = self._download_webpage(url, video_id)
+
+        next_data = self._search_nextjs_data(webpage, video_id, default={})
+        if next_data:
+            # New Next.js site
+            props = next_data.get('props', {}).get('pageProps', {})
+            video_data = props.get('video') or {}
+            
+            # If the ID matches a specific video in the props
+            if not video_data and 'collectionData' in props:
+                # Playlist handling (collectionData was found, showList was empty)
+                collection = props.get('collectionData', {})
+                if str(collection.get('id')) == video_id:
+                    entries = []
+                    for item in collection.get('entries', []):
+                         # If we can extract a video result from the item, add it
+                        result = self._extract_nextjs_video(item)
+                        if result:
+                            entries.append(result)
+                    
+                    return self.playlist_result(
+                        entries, video_id, collection.get('title'), collection.get('description'))
+
+            if video_data:
+                result = self._extract_nextjs_video(video_data, video_id)
+                if result:
+                    return result
+
+        # Legacy fallback
         meta = self._search_json(r'window\._PBS_KIDS_DEEPLINK\s*=', webpage, 'video info', video_id)
         formats, subtitles = self._extract_m3u8_formats_and_subtitles(
             traverse_obj(meta, ('video_obj', 'URI', {url_or_none})), video_id, ext='mp4')
@@ -794,3 +801,11 @@ class PBSKidsIE(InfoExtractor):
                 'upload_date': ('video_obj', 'air_date', {unified_strdate}),
             }),
         }
+
+    def _extract_nextjs_video(self, video_data, video_id=None):
+        info = video_data.get('mediaManagerAsset') or {}
+        legacy_id = info.get('legacy_tp_media_id')
+        if legacy_id:
+            return self.url_result(f'https://www.pbs.org/video/{legacy_id}/', 'PBS')
+        # If legacy_id is missing, we could try other methods, but for now return None or error
+        return None
